@@ -1903,6 +1903,9 @@ static void store_key_options(THD *thd, String *packet, TABLE *table,
       append_unescaped(packet, key_info->comment.str, 
                        key_info->comment.length);
     }
+
+    if (!key_info->is_visible)
+      packet->append(STRING_WITH_LEN(" /*!50616 INVISIBLE */"));
   }
 }
 
@@ -2060,6 +2063,7 @@ public:
   CSET_STRING query_string;
   long long memory_used, query_memory_used;
   ulonglong logical_read, physical_sync_read, physical_async_read;
+  ulonglong cpu_time;
 };
 
 // For sorting by thread_id.
@@ -2238,6 +2242,10 @@ void mysqld_list_processes(THD *thd,const char *user, bool verbose)
     field_list.push_back(field= new Item_return_int("Physical_async_read",
                                                     MY_INT64_NUM_DECIMAL_DIGITS,
                                                     MYSQL_TYPE_LONGLONG));
+
+    field_list.push_back(field= new Item_return_int("CPU_time",
+                                                    MY_INT64_NUM_DECIMAL_DIGITS,
+                                                    MYSQL_TYPE_LONGLONG));
   }
   if (protocol->send_result_set_metadata(&field_list,
                             Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
@@ -2294,6 +2302,7 @@ void mysqld_list_processes(THD *thd,const char *user, bool verbose)
         thd_info->logical_read= tmp->status_var.logical_read;
         thd_info->physical_sync_read= tmp->status_var.physical_sync_read;
         thd_info->physical_async_read= tmp->status_var.physical_async_read;
+        thd_info->cpu_time= tmp->status_var.cpu_time;
 
         DBUG_EXECUTE_IF("processlist_acquiring_dump_threads_LOCK_thd_data",
                         {
@@ -2360,6 +2369,7 @@ void mysqld_list_processes(THD *thd,const char *user, bool verbose)
       protocol->store(thd_info->logical_read);
       protocol->store(thd_info->physical_sync_read);
       protocol->store(thd_info->physical_async_read);
+      protocol->store(thd_info->cpu_time);
     }
     if (protocol->write())
       break; /* purecov: inspected */
@@ -5925,8 +5935,13 @@ static int get_schema_stat_record(THD *thd, TABLE_LIST *tables,
         DBUG_ASSERT(MY_TEST(key_info->flags & HA_USES_COMMENT) ==
                    (key_info->comment.length > 0));
         if (key_info->flags & HA_USES_COMMENT)
-          table->field[15]->store(key_info->comment.str, 
+          table->field[15]->store(key_info->comment.str,
                                   key_info->comment.length, cs);
+        /* is_visible column */
+        const char *is_visible= key_info->is_visible ? "YES" : "NO";
+        table->field[16]->store(is_visible, strlen(is_visible), cs);
+        table->field[16]->set_notnull();
+
         if (schema_table_store_record(thd, table))
           DBUG_RETURN(1);
       }
@@ -8155,6 +8170,7 @@ ST_FIELD_INFO stat_fields_info[]=
   {"COMMENT", 16, MYSQL_TYPE_STRING, 0, 1, "Comment", OPEN_FRM_ONLY},
   {"INDEX_COMMENT", INDEX_COMMENT_MAXLEN, MYSQL_TYPE_STRING, 0, 0, 
    "Index_comment", OPEN_FRM_ONLY},
+  {"IS_VISIBLE", 4, MYSQL_TYPE_STRING, 0, 1, "Visible", OPEN_FULL_TABLE},
   {0, 0, MYSQL_TYPE_STRING, 0, 0, 0, SKIP_OPEN_TABLE}
 };
 

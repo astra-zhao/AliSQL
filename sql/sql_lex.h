@@ -217,6 +217,7 @@ enum enum_drop_mode
 #define TL_OPTION_FORCE_INDEX	2
 #define TL_OPTION_IGNORE_LEAVES 4
 #define TL_OPTION_ALIAS         8
+#define TL_OPTION_SEQUENCE      16
 
 typedef List<Item> List_item;
 typedef Mem_root_array<ORDER*, true> Group_list_ptrs;
@@ -2576,6 +2577,10 @@ public:
   table_map  used_tables;
 
   class Explain_format *explain_format;
+
+  bool return_update;
+  List<Item> return_update_list;
+  uint32 real_query_start;
 
   LEX();
 

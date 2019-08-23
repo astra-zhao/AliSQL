@@ -631,11 +631,15 @@ struct TABLE_SHARE
   LEX_STRING normalized_path;		/* unpack_filename(path) */
   LEX_STRING connect_string;
 
-  /* 
-     Set of keys in use, implemented as a Bitmap.
-     Excludes keys disabled by ALTER TABLE ... DISABLE KEYS.
+  /*
+    The set of indexes that are not disabled for this table. I.e. it excludes
+    indexes disabled by `ALTER TABLE ... DISABLE KEYS`, however it does
+    include invisible indexes.
   */
   key_map keys_in_use;
+
+  /* The set of visible and enabled indexes for this table. */
+  key_map visible_indexes;
   key_map keys_for_keyread;
   ha_rows min_rows, max_rows;		/* create information */
   ulong   avg_row_length;		/* create information */
@@ -909,6 +913,18 @@ struct TABLE_SHARE
 
   bool wait_for_old_version(THD *thd, struct timespec *abstime,
                             uint deadlock_weight);
+  /**
+    The set of indexes that the opitmizer may use when creating an execution
+    plan.
+  */
+
+  key_map usable_indexes() const
+  {
+    key_map usable_indexes(keys_in_use);
+    usable_indexes.intersect(visible_indexes);
+    return usable_indexes;
+  }
+
   /** Release resources and free memory occupied by the table share. */
   void destroy();
 
@@ -1222,8 +1238,8 @@ public:
 #endif
   MDL_ticket *mdl_ticket;
 
-  /* If true, will iterator the sequence nextval. */
-  bool iter_sequence;
+  /* If true, it's the sequence query syntax. */
+  bool sequence_query;
 
   void init(THD *thd, TABLE_LIST *tl);
   bool fill_item_list(List<Item> *item_list) const;
@@ -1704,8 +1720,11 @@ public:
   /* pointer to element after last one in translation table above */
   Field_translator *field_translation_end;
 
-  /*If true, it the SELECT FOR SEQUENCE syntax. */
+  /* If true, it's the SELECT FOR SEQUENCE syntax. */
   bool sequence_read;
+
+  /* If true, it's the sequence table query */
+  bool sequence;
   /*
     List (based on next_local) of underlying tables of this view. I.e. it
     does not include the tables of subqueries used in the view. Is set only

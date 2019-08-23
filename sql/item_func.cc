@@ -552,6 +552,70 @@ my_decimal *Item_func::val_decimal(my_decimal *decimal_value)
   return decimal_value;
 }
 
+/*
+  Raise an error with specified error message and optional sql state,
+  sql error code is ER_INTENTIONAL_ERROR.
+*/
+longlong Item_func_raise_error::val_int()
+{
+  DBUG_ENTER("Item_raise_error::val_int");
+  DBUG_ASSERT(fixed == 1);
+
+  THD* thd= current_thd;
+
+  String *sql_state= NULL;
+  String *msg= NULL;
+
+  if (arg_count == 2)
+  // both sql state and error message are specified
+  {
+    sql_state= args[0]->val_str(&value);
+    // validate sql_state input
+    if (sql_state == NULL)
+    {
+      my_error(ER_SP_BAD_SQLSTATE, MYF(0), "NULL");
+      DBUG_RETURN(0);
+    }
+
+    LEX_STRING lex_sql_state= sql_state->lex_string();
+
+    if (!is_sqlstate_valid(&lex_sql_state) || is_sqlstate_completion(sql_state->ptr()))
+    {
+      my_error(ER_SP_BAD_SQLSTATE, MYF(0), sql_state->ptr());
+      DBUG_RETURN(0);
+    }
+    msg= args[1]->val_str(&value);
+    // validate message input
+    if (msg == NULL)
+    {
+      my_error(ER_MALFORMED_MESSAGE, MYF(0), "NULL");
+      DBUG_RETURN(0);
+    }
+
+    // raise the manual error now
+    (void) thd->raise_error(ER_INTENTIONAL_ERROR,
+                            sql_state->ptr(),
+                            msg->ptr());
+
+    DBUG_RETURN(0);
+  }
+  else
+  // only error message is specified
+  {
+    msg= args[0]->val_str(&value);
+    // validate message input
+    if (msg == NULL)
+    {
+      my_error(ER_MALFORMED_MESSAGE, MYF(0), "NULL");
+      DBUG_RETURN(0);
+    }
+    // raise the manual error now
+    (void) thd->raise_error(ER_INTENTIONAL_ERROR,
+                            NULL,
+                            msg->ptr());
+    DBUG_RETURN(0);
+  }
+}
 
 String *Item_real_func::val_str(String *str)
 {
@@ -6350,7 +6414,7 @@ bool Item_func_match::fix_index()
   {
     if ((table->key_info[keynr].flags & HA_FULLTEXT) &&
         (flags & FT_BOOL ? table->keys_in_use_for_query.is_set(keynr) :
-                           table->s->keys_in_use.is_set(keynr)))
+         table->s->usable_indexes().is_set(keynr)))
 
     {
       ft_to_key[fts]=keynr;
@@ -7125,3 +7189,69 @@ longlong Item_func_uuid_short::val_int()
   mysql_mutex_unlock(&LOCK_uuid_generator);
   return (longlong) val;
 }
+/*
+   Sequence function.
+*/
+
+longlong Item_func_nextval::val_int()
+{
+  ulonglong value;
+  int error;
+  TABLE *table= table_list->table;
+  DBUG_ENTER("Item_func_nextval::val_int");
+  DBUG_ASSERT(table->file);
+
+  bitmap_set_bit(table->read_set, FIELD_NUM_NEXTVAL);
+
+  if (table->file->ha_rnd_init(1))
+    goto err;
+  else
+  {
+   if ((error= table->file->ha_rnd_next(table->record[0])))
+   {
+      table->file->print_error(error, MYF(0));
+      table->file->ha_rnd_end();
+      goto err;
+    }
+    table->file->ha_rnd_end();
+
+    value= table->field[FIELD_NUM_NEXTVAL]->val_int();
+    null_value= 0;
+    DBUG_RETURN(value);
+  }
+err:
+  null_value= 1;
+  DBUG_RETURN(0);
+}
+
+longlong Item_func_currval::val_int()
+{
+  ulonglong value;
+  int error;
+  TABLE *table= table_list->table;
+  DBUG_ENTER("Item_func_currval::val_int");
+  DBUG_ASSERT(table->file);
+
+  bitmap_set_bit(table->read_set, FIELD_NUM_CURRVAL);
+
+  if (table->file->ha_rnd_init(1))
+    goto err;
+  else
+  {
+   if ((error= table->file->ha_rnd_next(table->record[0])))
+   {
+      table->file->print_error(error, MYF(0));
+      table->file->ha_rnd_end();
+      goto err;
+    }
+    table->file->ha_rnd_end();
+
+    value= table->field[FIELD_NUM_CURRVAL]->val_int();
+    null_value= 0;
+    DBUG_RETURN(value);
+  }
+err:
+  null_value= 1;
+  DBUG_RETURN(0);
+}
+

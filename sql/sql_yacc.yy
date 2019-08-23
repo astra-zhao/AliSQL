@@ -1154,6 +1154,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, ulong *yystacksize);
 %token  CURDATE                       /* MYSQL-FUNC */
 %token  CURRENT_SYM                   /* SQL-2003-R */
 %token  CURRENT_USER                  /* SQL-2003-R */
+%token  CURRVAL_SYM
 %token  CURSOR_SYM                    /* SQL-2003-R */
 %token  CURSOR_NAME_SYM               /* SQL-2003-N */
 %token  CURTIME                       /* MYSQL-FUNC */
@@ -1407,6 +1408,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, ulong *yystacksize);
 %token  NEG
 %token  NEW_SYM                       /* SQL-2003-R */
 %token  NEXT_SYM                      /* SQL-2003-N */
+%token  NEXTVAL_SYM
 %token  NOCACHE_SYM
 %token  NOCYCLE_SYM
 %token  NODEGROUP_SYM
@@ -1692,6 +1694,8 @@ bool my_yyoverflow(short **a, YYSTYPE **b, ulong *yystacksize);
 %token  YEAR_MONTH_SYM
 %token  YEAR_SYM                      /* SQL-2003-R */
 %token  ZEROFILL
+%token  INVISIBLE_SYM
+%token  VISIBLE_SYM
 
 %left   JOIN_SYM INNER_SYM STRAIGHT_JOIN CROSS LEFT RIGHT
 /* A dummy token to force the priority of table_ref production in a join. */
@@ -1744,7 +1748,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, ulong *yystacksize);
         opt_natural_language_mode opt_query_expansion
         opt_ev_status opt_ev_on_completion ev_on_completion opt_ev_comment
         ev_alter_on_schedule_completion opt_ev_rename_to opt_ev_sql_stmt
-        trg_action_time trg_event force_drop
+        trg_action_time trg_event force_drop visibility
 
 /*
   Bit field of MYSQL_START_TRANS_OPT_* flags.
@@ -7400,10 +7404,16 @@ key_using_alg:
         | TYPE_SYM btree_or_rtree  { Lex->key_create_info.algorithm= $2; }
         ;
 
+visibility:
+          VISIBLE_SYM { $$= true; }
+        | INVISIBLE_SYM { $$= false; }
+        ;
+
 all_key_opt:
           KEY_BLOCK_SIZE opt_equal ulong_num
           { Lex->key_create_info.block_size= $3; }
 	| COMMENT_SYM TEXT_STRING_sys { Lex->key_create_info.comment= $2; }
+        | visibility { Lex->key_create_info.is_visible = $1; }
         ;
 
 normal_key_opt:
@@ -8086,6 +8096,15 @@ alter_list_item:
               MYSQL_YYABORT;
             lex->alter_info.alter_list.push_back(ac);
             lex->alter_info.flags|= Alter_info::ALTER_CHANGE_COLUMN_DEFAULT;
+          }
+        | ALTER INDEX_SYM ident visibility
+          {
+            LEX *lex= Lex;
+            Alter_index_visibility *ac= new Alter_index_visibility($3.str, $4);
+            if (ac == NULL)
+              MYSQL_YYABORT;
+            lex->alter_info.alter_index_visibility_list.push_back(ac);
+            lex->alter_info.flags|= Alter_info::ALTER_INDEX_VISIBILITY;
           }
         | ALTER opt_column field_ident DROP DEFAULT
           {
@@ -8793,7 +8812,14 @@ select:
           select_init
           {
             LEX *lex= Lex;
-            lex->sql_command= SQLCOM_SELECT;
+
+            DBUG_ASSERT(lex->sql_command == SQLCOM_SELECT ||
+                        lex->sql_command == SQLCOM_UPDATE ||
+                        lex->sql_command == SQLCOM_END);
+
+            /* SELECT...UPDATE is regarded as a DML.*/
+            if (lex->sql_command != SQLCOM_UPDATE)
+              lex->sql_command= SQLCOM_SELECT;
           }
         ;
 
@@ -8849,12 +8875,24 @@ select_part2:
             if (sel->linkage != UNION_TYPE)
               mysql_init_select(lex);
             lex->current_select->parsing_place= SELECT_LIST;
+
+            /* SELECT ... FROM UPDATE only applies to top-level SELECT statement. */
+            if (lex->sql_command == SQLCOM_UPDATE && sel != &lex->select_lex)
+            {
+              my_error(ER_CANT_USE_OPTION_HERE, MYF(0), "SELECT...FROM UPDATE");
+              MYSQL_YYABORT;
+            }
           }
           select_options select_item_list
           {
             Select->parsing_place= NO_MATTER;
           }
+          select_part3
+          ;
+
+select_part3:          
           select_into select_lock_type
+        | select_update
         ;
 
 select_into:
@@ -8865,6 +8903,52 @@ select_into:
         | select_from into
         ;
 
+/*
+  Implement Oracle/PG's "UPDATE ... RETURNING..." as "SELECT ... FROM UPDATE..."
+*/
+select_update:
+          FROM UPDATE_SYM
+          {
+            /* SELECT ... FROM UPDATE only applies to top-level SELECT statement. */
+            if (Lex->current_select != &Lex->select_lex)
+            {
+              my_error(ER_CANT_USE_OPTION_HERE, MYF(0), "SELECT...FROM UPDATE");
+              MYSQL_YYABORT;
+            }
+
+            if (Select->options)
+            {
+              my_error(ER_CANT_USE_OPTION_HERE, MYF(0), "SELECT...FROM UPDATE");
+              MYSQL_YYABORT;
+            }
+
+            /* Explain SELECT ... FROM UPDATE is not supported. */
+            if (Lex->describe)
+            {
+              my_error(ER_CANT_USE_OPTION_HERE, MYF(0), "SELECT...FROM UPDATE");
+              MYSQL_YYABORT;
+            }
+            Lex->sql_command= SQLCOM_UPDATE;
+            Lex->duplicates= DUP_ERROR;
+            Lex->return_update= true;
+            Lex->real_query_start= YYLIP->get_tok_start() - YYTHD->query();
+            Lex->return_update_list.swap(Select->item_list);
+            Select->item_list.empty();
+          }
+          opt_low_priority
+          opt_ci_on_success opt_rb_on_fail opt_queue_on_pk opt_target_affect_row
+          opt_ignore table_ident SET update_list
+          {
+            if (!Select->add_table_to_list(YYTHD, $10, NULL, 0,
+                                           TL_READ_DEFAULT,
+                                           MDL_SHARED_READ))
+              MYSQL_YYABORT;
+
+            Select->set_lock_for_tables($4);
+          }
+          where_clause opt_order_clause delete_limit_clause {}
+        ;
+          
 select_from:
           FROM join_table_list where_clause group_clause having_clause
           opt_order_clause opt_limit_clause procedure_analyse_clause
@@ -9640,6 +9724,30 @@ simple_expr:
           {
             $$= new (YYTHD->mem_root) Item_func_conv_charset($3,$5);
             if ($$ == NULL)
+              MYSQL_YYABORT;
+          }
+        | NEXTVAL_SYM '(' table_ident ')'
+          {
+            TABLE_LIST *table;
+            if (!(table= Lex->current_select->add_table_to_list(YYTHD, $3, NULL,
+                                                                TL_OPTION_SEQUENCE,
+                                                                TL_READ,
+                                                                MDL_SHARED_READ,
+                                                                NULL, NULL, NULL, true)))
+              MYSQL_YYABORT;
+            if (!($$= new (YYTHD->mem_root) Item_func_nextval(YYTHD, table)))
+              MYSQL_YYABORT;
+          }
+        | CURRVAL_SYM '(' table_ident ')'
+          {
+            TABLE_LIST *table;
+            if (!(table= Lex->current_select->add_table_to_list(YYTHD, $3, NULL,
+                                                                TL_OPTION_SEQUENCE,
+                                                                TL_READ,
+                                                                MDL_SHARED_READ,
+                                                                NULL, NULL, NULL, true)))
+              MYSQL_YYABORT;
+            if (!($$= new (YYTHD->mem_root) Item_func_currval(YYTHD, table)))
               MYSQL_YYABORT;
           }
         | DEFAULT '(' simple_ident ')'
@@ -14008,6 +14116,32 @@ simple_ident_q:
 
               $$= trg_fld;
             }
+            else if (!my_strcasecmp(system_charset_info, $3.str, "nextval"))
+            {
+              TABLE_LIST *table;
+              SELECT_LEX *sel= lex->current_select;
+              if (!(table= sel->add_table_to_list(thd, new Table_ident($1), NULL,
+                                                  TL_OPTION_SEQUENCE,
+                                                  TL_READ,
+                                                  MDL_SHARED_READ,
+                                                  NULL, NULL, NULL, true)))
+                MYSQL_YYABORT;
+              if (!($$= new (thd->mem_root) Item_func_nextval(thd, table)))
+                MYSQL_YYABORT;
+            }
+            else if (!my_strcasecmp(system_charset_info, $3.str, "currval"))
+            {
+              TABLE_LIST *table;
+              SELECT_LEX *sel= lex->current_select;
+              if (!(table= sel->add_table_to_list(thd, new Table_ident($1), NULL,
+                                                  TL_OPTION_SEQUENCE,
+                                                  TL_READ,
+                                                  MDL_SHARED_READ,
+                                                  NULL, NULL, NULL, true)))
+                MYSQL_YYABORT;
+              if (!($$= new (thd->mem_root) Item_func_currval(thd, table)))
+                MYSQL_YYABORT;
+            }
             else
             {
               SELECT_LEX *sel= lex->current_select;
@@ -14385,6 +14519,7 @@ keyword:
         | HELP_SYM              {}
         | HOST_SYM              {}
         | INSTALL_SYM           {}
+        | INVISIBLE_SYM         {}
         | LANGUAGE_SYM          {}
         | NO_SYM                {}
         | OPEN_SYM              {}
@@ -14408,6 +14543,7 @@ keyword:
         | START_SYM             {}
         | STOP_SYM              {}
         | TRUNCATE_SYM          {}
+        | VISIBLE_SYM           {}
         | UNICODE_SYM           {}
         | UNINSTALL_SYM         {}
         | WRAPPER_SYM           {}
@@ -14473,6 +14609,7 @@ keyword_sp:
           not reserved in MySQL per WL#2111 specification.
         */
         | CURRENT_SYM              {}
+        | CURRVAL_SYM              {}
         | CURSOR_NAME_SYM          {}
         | CYCLE_SYM                {}
         | DATA_SYM                 {}
@@ -14599,6 +14736,7 @@ keyword_sp:
         | NDBCLUSTER_SYM           {}
         | NEXT_SYM                 {}
         | NEW_SYM                  {}
+        | NEXTVAL_SYM              {}
         | NOCACHE_SYM              {}
         | NOCYCLE_SYM              {}
         | NO_WAIT_SYM              {}

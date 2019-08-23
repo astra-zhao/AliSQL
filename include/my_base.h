@@ -260,6 +260,7 @@ enum ha_base_keytype {
 #define HA_SPATIAL		1024    /* For spatial search */
 #define HA_NULL_ARE_EQUAL	2048	/* NULL in key are cmp as equal */
 #define HA_GENERATED_KEY	8192	/* Automaticly generated key */
+#define HA_INVISIBLE_KEY        (1<<30) /* This key is visible */
 #define HA_CLUSTERING           (1<<31) /* TokuDB CLUSTERING key */
 
         /* The combination of the above can be used for key type comparison. */
@@ -490,8 +491,9 @@ is the global server default. */
 #define HA_ERR_FTS_TOO_MANY_WORDS_IN_PHRASE	191 /* Too many words in a phrase */
 #define HA_ERR_SEQUENCE_RUN_OUT         192     /* Sequence has been run out */
 #define HA_ERR_SEQUENCE_INVALID         193     /* Sequence structure or number is invalid.*/
-#define HA_ERR_SEQUENCE_ACCESS_ERROR    194     /* Sequence access error */
-#define HA_ERR_LAST               194    /* Copy of last error nr */
+#define HA_ERR_SEQUENCE_NOT_DEFINED     194     /* Sequence is not yet defined in this session. */
+#define HA_ERR_SEQUENCE_ACCESS_ERROR    195     /* Sequence access error */
+#define HA_ERR_LAST               195    /* Copy of last error nr */
 
 /* Number of different errors */
 #define HA_ERR_ERRORS            (HA_ERR_LAST - HA_ERR_FIRST + 1)

@@ -904,6 +904,22 @@ public:
   void fix_length_and_dec();
 };
 
+/**
+  This class is used for implementing the new raise_error function and the functions related to them.
+*/
+class Item_func_raise_error :public Item_int_func
+{
+
+  String value;
+public:
+  Item_func_raise_error( Item *a) :Item_int_func(a) {}
+  Item_func_raise_error( Item *a, Item *b)
+    :Item_int_func(a, b)
+  {}
+
+  longlong val_int();
+  const char *func_name() const {return "raise_error";}
+};
 
 class Item_func_rand :public Item_real_func
 {
@@ -2222,6 +2238,53 @@ public:
   void fix_length_and_dec()
   { max_length= 21; unsigned_flag=1; }
   bool check_partition_func_processor(uchar *int_arg) {return FALSE;}
+};
+
+/* Implementation for sequences: NEXTVAL() */
+class Item_func_nextval :public Item_int_func
+{
+protected:
+  THD *m_thd;
+  TABLE_LIST *table_list;
+
+public:
+  Item_func_nextval(THD *thd, TABLE_LIST *table):
+    Item_int_func(), m_thd(thd), table_list(table) {}
+
+  longlong val_int();
+  const char *func_name() const { return "nextval"; }
+  void fix_length_and_dec()
+  {
+    unsigned_flag= 1;
+    max_length= MAX_BIGINT_WIDTH;
+    maybe_null= 1;
+  }
+
+  bool const_item() const { return 0; }
+};
+
+/* Implementation for sequences: CURRVAL() */
+class Item_func_currval :public Item_int_func
+{
+protected:
+  THD *m_thd;
+  TABLE_LIST *table_list;
+
+public:
+  Item_func_currval(THD *thd, TABLE_LIST *table):
+    Item_int_func(), m_thd(thd), table_list(table) {}
+
+  longlong val_int();
+  const char *func_name() const { return "currval"; }
+  void fix_length_and_dec()
+  {
+    unsigned_flag= 1;
+    max_length= MAX_BIGINT_WIDTH;
+    maybe_null= 1;
+  }
+
+  bool const_item() const { return 0; }
+
 };
 
 Item *get_system_var(THD *thd, enum_var_type var_type, LEX_STRING name,

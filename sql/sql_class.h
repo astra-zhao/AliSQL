@@ -269,6 +269,34 @@ public:
     { return new (mem_root) Alter_column(*this); }
 };
 
+/**
+   An ALTER INDEX operation that changes the visibility of an index.
+*/
+class Alter_index_visibility :public Sql_alloc {
+public:
+  Alter_index_visibility(const char* name, bool is_visible)
+    :m_name(name), m_is_visible(is_visible)
+  {
+    DBUG_ASSERT(name != NULL);
+  }
+
+  const char *name() const { return m_name; }
+
+  /* The visibility after the operation is performed. */
+  bool is_visible() const { return m_is_visible; }
+
+  /**
+    Used to make a clone of this object for ALTER/CREATE TABLE
+    @sa comment for Key_part_spec::clone
+  */
+  Alter_index_visibility *clone(MEM_ROOT *mem_root) const
+  { return new (mem_root) Alter_index_visibility(*this); }
+
+private:
+  const char *m_name;
+  bool m_is_visible;
+};
+
 
 class Key :public Sql_alloc {
 public:
@@ -648,6 +676,7 @@ typedef struct system_status_var
   ulonglong physical_sync_read;
   ulonglong physical_async_read;
   ulonglong io_limit_count;
+  ulonglong cpu_time;
   /*
     Number of statements sent from the client
   */
@@ -2218,6 +2247,9 @@ public:
   */
   char	  *thread_stack;
 
+  /* Hash of used sequences (for current values) */
+  HASH sequences;
+
   /**
     Currently selected catalog.
   */
@@ -2310,6 +2342,9 @@ public:
   // track down slow pthread_create
   ulonglong  prior_thr_create_utime, thr_create_utime;
   ulonglong  start_utime, utime_after_lock;
+  struct timespec  start_cpu_time;
+  my_pthread_clock_id clock_id;
+  bool clock_err;
 
   thr_lock_type update_lock_default;
   Delayed_insert *di;
@@ -3590,6 +3625,34 @@ public:
   {
     return limit_found_rows;
   }
+
+  void set_cpu_time()
+  {
+    clock_err= false;
+#ifdef HAVE_CPU_TIME
+    if (my_pthread_getcpuclockid(&clock_id)
+        || my_clock_gettime(clock_id, &start_cpu_time) == -1)
+    {
+      clock_err= true;
+      return;
+    }
+#endif
+  }
+
+  void inc_cpu_time()
+  {
+#ifdef HAVE_CPU_TIME
+    if (!clock_err)
+    {
+      struct timespec end_cpu_time;
+      if (my_clock_gettime(clock_id, &end_cpu_time) != -1)
+      {
+        ulonglong diff= diff_timespec(end_cpu_time, start_cpu_time);
+        status_var_add(status_var.cpu_time, diff);
+      }
+    }
+#endif
+  }
   /**
     Returns TRUE if session is in a multi-statement transaction mode.
 
@@ -4128,6 +4191,13 @@ public:
     @param code the MYSQL_ERRNO error code of the note
   */
   void raise_note_printf(uint code, ...);
+
+  /**
+    Raise an exception condition with specified msg
+  */
+  void raise_error(uint sql_errno,
+                   const char* sqlstate,
+                   const char* msg);
 
 private:
   /*
